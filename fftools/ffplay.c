@@ -4132,6 +4132,54 @@ void buttons_render(ButtonManager *mgr, SDL_Renderer *renderer)
                     SDL_RenderDrawLine(renderer, cx + 2, cy, cx + size + 2, cy + size);
                 }
                 break;
+
+            case BUTTON_ID_SWITCH_CHANNEL:
+                // Draw "CH" text using simple lines
+                {
+                    int cx = btn->rect.x + btn->rect.w / 2;
+                    int cy = btn->rect.y + btn->rect.h / 2;
+                    int size = 10;
+                    // Draw 'C' - left side
+                    SDL_RenderDrawLine(renderer, cx - 12, cy - size, cx - 12, cy + size);
+                    SDL_RenderDrawLine(renderer, cx - 12, cy - size, cx - 6, cy - size);
+                    SDL_RenderDrawLine(renderer, cx - 12, cy + size, cx - 6, cy + size);
+                    // Draw 'H' - right side
+                    SDL_RenderDrawLine(renderer, cx + 2, cy - size, cx + 2, cy + size);
+                    SDL_RenderDrawLine(renderer, cx + 8, cy - size, cx + 8, cy + size);
+                    SDL_RenderDrawLine(renderer, cx + 2, cy, cx + 8, cy);
+                }
+                break;
+
+            case BUTTON_ID_STRESS_TEST:
+                // Draw circular arrows for stress test icon
+                {
+                    int cx = btn->rect.x + btn->rect.w / 2;
+                    int cy = btn->rect.y + btn->rect.h / 2;
+                    int radius = 10;
+
+                    // Draw circular arc using line segments
+                    for (int angle = 0; angle < 270; angle += 30) {
+                        double rad1 = angle * 3.14159 / 180.0;
+                        double rad2 = (angle + 30) * 3.14159 / 180.0;
+                        int x1 = cx + (int)(radius * cos(rad1));
+                        int y1 = cy + (int)(radius * sin(rad1));
+                        int x2 = cx + (int)(radius * cos(rad2));
+                        int y2 = cy + (int)(radius * sin(rad2));
+                        SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+                    }
+
+                    // Draw arrow head
+                    SDL_RenderDrawLine(renderer, cx + radius, cy, cx + radius - 4, cy - 4);
+                    SDL_RenderDrawLine(renderer, cx + radius, cy, cx + radius - 4, cy + 4);
+
+                    // Change color to red if stress test is running
+                    if (stress_test_running) {
+                        SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+                        SDL_RenderFillRect(renderer, &btn->rect);
+                        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    }
+                }
+                break;
         }
     }
 }
