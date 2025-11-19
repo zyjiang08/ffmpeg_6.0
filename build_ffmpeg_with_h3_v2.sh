@@ -199,7 +199,7 @@ echo_info "Running ./configure..."
     --enable-sdl2 \
     --extra-cflags="-I$H3_ADAPTER_DIR -I$ENGINE_INCLUDE" \
     --extra-ldflags="-L$(dirname $QUICHE_ENGINE_LIB) -L$(dirname $H3_ADAPTER_LIB)" \
-    --extra-libs="-lquicheengine -lstdc++ -lpthread" \
+    --extra-libs="-lh3adapter -lquicheengine -lstdc++ -lpthread" \
     --enable-protocol=h3
 
 if [ $? -ne 0 ]; then
