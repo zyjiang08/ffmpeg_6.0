@@ -33,6 +33,8 @@ typedef enum {
     BUTTON_ID_STOP,
     BUTTON_ID_SEEK_BACKWARD,
     BUTTON_ID_SEEK_FORWARD,
+    BUTTON_ID_SWITCH_CHANNEL,      // Channel switch button
+    BUTTON_ID_STRESS_TEST,         // Stress test toggle button
     BUTTON_ID_COUNT
 } ButtonID;
 

@@ -310,6 +310,26 @@ typedef struct VideoState {
     ButtonManager button_mgr;  // Button UI manager
 } VideoState;
 
+/* Channel switching support */
+#define MAX_CHANNELS 10
+
+typedef struct {
+    const char *url;
+    const char *name;
+} ChannelInfo;
+
+static ChannelInfo channels[MAX_CHANNELS] = {
+    {"h3://120.79.21.28:8443/600k_cbr.flv", "Channel 1"},
+    {"h3://120.79.21.28:8443/800k_cbr.flv", "Channel 2"},
+    {NULL, NULL}  // End marker
+};
+
+static int current_channel_index = 0;
+static int stress_test_running = 0;
+static SDL_TimerID stress_test_timer = 0;
+
+#define STRESS_TEST_INTERVAL_MS 3000  // 3 seconds between switches
+
 /* options specified by the user */
 static const AVInputFormat *file_iformat;
 static const char *input_filename;
@@ -1506,6 +1526,85 @@ static void toggle_pause(VideoState *is)
 static void toggle_mute(VideoState *is)
 {
     is->muted = !is->muted;
+}
+
+/* Forward declarations */
+static VideoState *cur_stream;
+static VideoState *stream_open(const char *filename, const AVInputFormat *iformat);
+static void stream_close(VideoState *is);
+
+/* Channel switching functions */
+static void switch_to_channel(int channel_index)
+{
+    if (channel_index < 0 || channel_index >= MAX_CHANNELS)
+        return;
+    if (!channels[channel_index].url)
+        return;
+
+    av_log(NULL, AV_LOG_INFO, "Switching to channel %d: %s\n",
+           channel_index, channels[channel_index].name);
+
+    // Close current stream
+    if (cur_stream) {
+        stream_close(cur_stream);
+        cur_stream = NULL;
+    }
+
+    // Open new stream
+    VideoState *is = stream_open(channels[channel_index].url, file_iformat);
+    if (is) {
+        cur_stream = is;
+        current_channel_index = channel_index;
+        av_log(NULL, AV_LOG_INFO, "Channel %d opened successfully\n", channel_index);
+    } else {
+        av_log(NULL, AV_LOG_ERROR, "Failed to open channel %d\n", channel_index);
+    }
+}
+
+static void switch_to_next_channel(void)
+{
+    int next_index = (current_channel_index + 1) % MAX_CHANNELS;
+    while (channels[next_index].url == NULL && next_index != current_channel_index) {
+        next_index = (next_index + 1) % MAX_CHANNELS;
+    }
+    if (next_index != current_channel_index || channels[next_index].url) {
+        switch_to_channel(next_index);
+    }
+}
+
+/* Stress test timer callback */
+static Uint32 stress_test_timer_callback(Uint32 interval, void *param)
+{
+    (void)param;  // Unused parameter
+    if (stress_test_running) {
+        // Send custom SDL event to trigger channel switch in main thread
+        SDL_Event event;
+        event.type = SDL_USEREVENT;
+        event.user.code = 0;  // 0 = channel switch event
+        event.user.data1 = NULL;
+        event.user.data2 = NULL;
+        SDL_PushEvent(&event);
+        return interval;  // Continue timer
+    }
+    return 0;  // Stop timer
+}
+
+static void toggle_stress_test(void)
+{
+    stress_test_running = !stress_test_running;
+
+    if (stress_test_running) {
+        av_log(NULL, AV_LOG_INFO, "Starting stress test (switching every %dms)...\n",
+               STRESS_TEST_INTERVAL_MS);
+        stress_test_timer = SDL_AddTimer(STRESS_TEST_INTERVAL_MS,
+                                         stress_test_timer_callback, NULL);
+    } else {
+        av_log(NULL, AV_LOG_INFO, "Stopping stress test...\n");
+        if (stress_test_timer) {
+            SDL_RemoveTimer(stress_test_timer);
+            stress_test_timer = 0;
+        }
+    }
 }
 
 static void update_volume(VideoState *is, int sign, double step)
@@ -3447,8 +3546,15 @@ static void event_loop(VideoState *cur_stream)
                         case BUTTON_ID_SEEK_FORWARD:
                             incr = 10.0;
                             goto do_seek;
+                        case BUTTON_ID_SWITCH_CHANNEL:
+                            switch_to_next_channel();
+                            break;
+                        case BUTTON_ID_STRESS_TEST:
+                            toggle_stress_test();
+                            break;
                     }
-                    cur_stream->force_refresh = 1;
+                    if (cur_stream)
+                        cur_stream->force_refresh = 1;
                     break;  // Don't process other click events if button was clicked
                 }
             }
@@ -3495,6 +3601,13 @@ static void event_loop(VideoState *cur_stream)
                         ts += cur_stream->ic->start_time;
                     stream_seek(cur_stream, ts, 0, 0);
                 }
+            break;
+        case SDL_USEREVENT:
+            // Handle stress test timer events
+            if (event.user.code == 0) {
+                // Channel switch event from timer
+                switch_to_next_channel();
+            }
             break;
         case SDL_WINDOWEVENT:
             switch (event.window.event) {
@@ -3880,7 +3993,9 @@ void buttons_init(ButtonManager *mgr, int window_width, int window_height)
         "Play",    // BUTTON_ID_PLAY_PAUSE
         "Stop",    // BUTTON_ID_STOP
         "<<",      // BUTTON_ID_SEEK_BACKWARD
-        ">>"       // BUTTON_ID_SEEK_FORWARD
+        ">>",      // BUTTON_ID_SEEK_FORWARD
+        "CH",      // BUTTON_ID_SWITCH_CHANNEL
+        "Test"     // BUTTON_ID_STRESS_TEST
     };
 
     for (int i = 0; i < BUTTON_ID_COUNT; i++) {
