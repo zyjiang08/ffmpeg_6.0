@@ -310,26 +310,6 @@ typedef struct VideoState {
     ButtonManager button_mgr;  // Button UI manager
 } VideoState;
 
-/* Channel switching support */
-#define MAX_CHANNELS 10
-
-typedef struct {
-    const char *url;
-    const char *name;
-} ChannelInfo;
-
-static ChannelInfo channels[MAX_CHANNELS] = {
-    {"h3://120.79.21.28:8443/600k_cbr.flv", "Channel 1"},
-    {"h3://120.79.21.28:8443/800k_cbr.flv", "Channel 2"},
-    {NULL, NULL}  // End marker
-};
-
-static int current_channel_index = 0;
-static int stress_test_running = 0;
-static SDL_TimerID stress_test_timer = 0;
-
-#define STRESS_TEST_INTERVAL_MS 3000  // 3 seconds between switches
-
 /* options specified by the user */
 static const AVInputFormat *file_iformat;
 static const char *input_filename;
@@ -385,7 +365,6 @@ static int is_full_screen;
 static int64_t audio_callback_time;
 
 #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
-#define FF_CHANNEL_SWITCH_EVENT (SDL_USEREVENT + 3)
 
 static SDL_Window *window;
 static SDL_Renderer *renderer;
@@ -1527,75 +1506,6 @@ static void toggle_pause(VideoState *is)
 static void toggle_mute(VideoState *is)
 {
     is->muted = !is->muted;
-}
-
-/* Forward declarations */
-static VideoState *g_cur_stream;  // Global current stream for channel switching
-static VideoState *stream_open(const char *filename, const AVInputFormat *iformat);
-static void stream_close(VideoState *is);
-
-/* Channel switching functions */
-static void request_channel_switch(int channel_index)
-{
-    if (channel_index < 0 || channel_index >= MAX_CHANNELS)
-        return;
-    if (!channels[channel_index].url)
-        return;
-
-    // Store the target channel index
-    current_channel_index = channel_index;
-
-    // Send event to trigger channel switch
-    SDL_Event event;
-    event.type = FF_CHANNEL_SWITCH_EVENT;
-    event.user.data1 = (void*)(intptr_t)channel_index;
-    SDL_PushEvent(&event);
-}
-
-static void switch_to_next_channel(void)
-{
-    int next_index = (current_channel_index + 1) % MAX_CHANNELS;
-    while (channels[next_index].url == NULL && next_index != current_channel_index) {
-        next_index = (next_index + 1) % MAX_CHANNELS;
-    }
-    if (next_index != current_channel_index || channels[next_index].url) {
-        request_channel_switch(next_index);
-    }
-}
-
-/* Stress test timer callback */
-static Uint32 stress_test_timer_callback(Uint32 interval, void *param)
-{
-    (void)param;  // Unused parameter
-    if (stress_test_running) {
-        // Send custom SDL event to trigger channel switch in main thread
-        SDL_Event event;
-        event.type = SDL_USEREVENT;
-        event.user.code = 0;  // 0 = channel switch event
-        event.user.data1 = NULL;
-        event.user.data2 = NULL;
-        SDL_PushEvent(&event);
-        return interval;  // Continue timer
-    }
-    return 0;  // Stop timer
-}
-
-static void toggle_stress_test(void)
-{
-    stress_test_running = !stress_test_running;
-
-    if (stress_test_running) {
-        av_log(NULL, AV_LOG_INFO, "Starting stress test (switching every %dms)...\n",
-               STRESS_TEST_INTERVAL_MS);
-        stress_test_timer = SDL_AddTimer(STRESS_TEST_INTERVAL_MS,
-                                         stress_test_timer_callback, NULL);
-    } else {
-        av_log(NULL, AV_LOG_INFO, "Stopping stress test...\n");
-        if (stress_test_timer) {
-            SDL_RemoveTimer(stress_test_timer);
-            stress_test_timer = 0;
-        }
-    }
 }
 
 static void update_volume(VideoState *is, int sign, double step)
@@ -3537,15 +3447,8 @@ static void event_loop(VideoState *cur_stream)
                         case BUTTON_ID_SEEK_FORWARD:
                             incr = 10.0;
                             goto do_seek;
-                        case BUTTON_ID_SWITCH_CHANNEL:
-                            switch_to_next_channel();
-                            break;
-                        case BUTTON_ID_STRESS_TEST:
-                            toggle_stress_test();
-                            break;
                     }
-                    if (cur_stream)
-                        cur_stream->force_refresh = 1;
+                    cur_stream->force_refresh = 1;
                     break;  // Don't process other click events if button was clicked
                 }
             }
@@ -3593,13 +3496,6 @@ static void event_loop(VideoState *cur_stream)
                     stream_seek(cur_stream, ts, 0, 0);
                 }
             break;
-        case SDL_USEREVENT:
-            // Handle stress test timer events
-            if (event.user.code == 0) {
-                // Channel switch event from timer
-                switch_to_next_channel();
-            }
-            break;
         case SDL_WINDOWEVENT:
             switch (event.window.event) {
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
@@ -3619,11 +3515,6 @@ static void event_loop(VideoState *cur_stream)
         case FF_QUIT_EVENT:
             do_exit(cur_stream);
             break;
-        case FF_CHANNEL_SWITCH_EVENT:
-            // Channel switch requested - close current stream and return
-            av_log(NULL, AV_LOG_INFO, "Channel switch event received\n");
-            stream_close(cur_stream);
-            return;  // Exit event loop to allow main to start new channel
         default:
             break;
         }
@@ -3910,37 +3801,13 @@ int main(int argc, char **argv)
         }
     }
 
-    // Main loop for channel switching
-    while (1) {
-        const char *url_to_open;
-
-        // First time: use command line input
-        // After channel switch: use the channel URL
-        if (!g_cur_stream) {
-            url_to_open = input_filename;
-            current_channel_index = 0;  // Start with channel 0
-        } else {
-            // Channel switch was requested
-            url_to_open = channels[current_channel_index].url;
-            av_log(NULL, AV_LOG_INFO, "Switching to channel %d: %s\n",
-                   current_channel_index, channels[current_channel_index].name);
-        }
-
-        is = stream_open(url_to_open, file_iformat);
-        if (!is) {
-            av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
-            do_exit(NULL);
-        }
-
-        // Update global current stream
-        g_cur_stream = is;
-
-        // Run event loop (will return when channel switch is requested)
-        event_loop(is);
-
-        // If we get here, it means channel switch was requested
-        // Loop will restart with new channel
+    is = stream_open(input_filename, file_iformat);
+    if (!is) {
+        av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
+        do_exit(NULL);
     }
+
+    event_loop(is);
 
     /* never returns */
 
@@ -4013,9 +3880,7 @@ void buttons_init(ButtonManager *mgr, int window_width, int window_height)
         "Play",    // BUTTON_ID_PLAY_PAUSE
         "Stop",    // BUTTON_ID_STOP
         "<<",      // BUTTON_ID_SEEK_BACKWARD
-        ">>",      // BUTTON_ID_SEEK_FORWARD
-        "CH",      // BUTTON_ID_SWITCH_CHANNEL
-        "Test"     // BUTTON_ID_STRESS_TEST
+        ">>"       // BUTTON_ID_SEEK_FORWARD
     };
 
     for (int i = 0; i < BUTTON_ID_COUNT; i++) {
@@ -4150,54 +4015,6 @@ void buttons_render(ButtonManager *mgr, SDL_Renderer *renderer)
                     // Second right arrow
                     SDL_RenderDrawLine(renderer, cx + 2, cy, cx + size + 2, cy - size);
                     SDL_RenderDrawLine(renderer, cx + 2, cy, cx + size + 2, cy + size);
-                }
-                break;
-
-            case BUTTON_ID_SWITCH_CHANNEL:
-                // Draw "CH" text using simple lines
-                {
-                    int cx = btn->rect.x + btn->rect.w / 2;
-                    int cy = btn->rect.y + btn->rect.h / 2;
-                    int size = 10;
-                    // Draw 'C' - left side
-                    SDL_RenderDrawLine(renderer, cx - 12, cy - size, cx - 12, cy + size);
-                    SDL_RenderDrawLine(renderer, cx - 12, cy - size, cx - 6, cy - size);
-                    SDL_RenderDrawLine(renderer, cx - 12, cy + size, cx - 6, cy + size);
-                    // Draw 'H' - right side
-                    SDL_RenderDrawLine(renderer, cx + 2, cy - size, cx + 2, cy + size);
-                    SDL_RenderDrawLine(renderer, cx + 8, cy - size, cx + 8, cy + size);
-                    SDL_RenderDrawLine(renderer, cx + 2, cy, cx + 8, cy);
-                }
-                break;
-
-            case BUTTON_ID_STRESS_TEST:
-                // Draw circular arrows for stress test icon
-                {
-                    int cx = btn->rect.x + btn->rect.w / 2;
-                    int cy = btn->rect.y + btn->rect.h / 2;
-                    int radius = 10;
-
-                    // Draw circular arc using line segments
-                    for (int angle = 0; angle < 270; angle += 30) {
-                        double rad1 = angle * 3.14159 / 180.0;
-                        double rad2 = (angle + 30) * 3.14159 / 180.0;
-                        int x1 = cx + (int)(radius * cos(rad1));
-                        int y1 = cy + (int)(radius * sin(rad1));
-                        int x2 = cx + (int)(radius * cos(rad2));
-                        int y2 = cy + (int)(radius * sin(rad2));
-                        SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
-                    }
-
-                    // Draw arrow head
-                    SDL_RenderDrawLine(renderer, cx + radius, cy, cx + radius - 4, cy - 4);
-                    SDL_RenderDrawLine(renderer, cx + radius, cy, cx + radius - 4, cy + 4);
-
-                    // Change color to red if stress test is running
-                    if (stress_test_running) {
-                        SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
-                        SDL_RenderFillRect(renderer, &btn->rect);
-                        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                    }
                 }
                 break;
         }
